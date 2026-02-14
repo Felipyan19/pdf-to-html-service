@@ -12,6 +12,7 @@ import mimetypes
 import shutil
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
+from urllib.parse import urlencode
 
 import fitz
 from PIL import Image
@@ -43,6 +44,22 @@ def resolve_public_base_url(req):
     proto = forwarded_proto.split(',')[0].strip()
     host = forwarded_host.split(',')[0].strip()
     return f"{proto}://{host}"
+
+
+def build_convert_query_url(public_base_url, action, process_id, asset_path=None):
+    params = {'action': action, 'process_id': process_id}
+    if asset_path is not None:
+        params['asset_path'] = asset_path
+    return f"{public_base_url}/convert?{urlencode(params)}"
+
+
+def build_public_asset_url(public_base_url, process_id, asset_path):
+    return build_convert_query_url(
+        public_base_url=public_base_url,
+        action='asset',
+        process_id=process_id,
+        asset_path=asset_path
+    )
 
 
 def utcnow():
@@ -83,8 +100,10 @@ def write_process_meta(output_dir, process_id, html_filename, public_base_url, t
         'html_filename': html_filename,
         'created_at': dt_to_iso(created_at),
         'expires_at': dt_to_iso(expires_at),
-        'assets_base_url': f"{public_base_url}/convert/assets/{process_id}",
-        'public_html_url': f"{public_base_url}/convert/view/{process_id}"
+        'assets_base_url': build_convert_query_url(public_base_url, 'asset', process_id),
+        'asset_url_template': build_public_asset_url(public_base_url, process_id, '{asset_path}'),
+        'public_html_url': build_convert_query_url(public_base_url, 'view', process_id),
+        'public_download_url': build_convert_query_url(public_base_url, 'download', process_id)
     }
     with open(process_meta_path(output_dir), 'w', encoding='utf-8') as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
@@ -361,6 +380,37 @@ def rewrite_html_relative_assets_to_base(html_content, assets_base_url):
     return html_content
 
 
+def rewrite_html_relative_assets_to_public_urls(html_content, public_base_url, process_id):
+    """
+    Convierte rutas relativas de src/href a URLs públicas sobre /convert?action=asset.
+    """
+    if not public_base_url or not process_id:
+        return html_content
+
+    def replace_relative(match):
+        prefix, quote, path = match.group(1), match.group(2), match.group(3).strip()
+        if path.startswith(('http://', 'https://', '//', 'data:')):
+            return match.group(0)
+        if path.startswith('/'):
+            path = path.lstrip('/')
+        new_url = build_public_asset_url(public_base_url, process_id, path)
+        return prefix + quote + new_url + quote
+
+    html_content = re.sub(
+        r'(<img[^>]*\ssrc=)(["\'])([^"\']*)\2',
+        replace_relative,
+        html_content,
+        flags=re.IGNORECASE
+    )
+    html_content = re.sub(
+        r'(<link[^>]*\shref=)(["\'])([^"\']*)\2',
+        replace_relative,
+        html_content,
+        flags=re.IGNORECASE
+    )
+    return html_content
+
+
 def improve_html_rendering(html_content):
     """
     Mejora el rendering del HTML sin cambiar colores
@@ -401,13 +451,29 @@ def health():
     """Health check endpoint"""
     return jsonify({'status': 'healthy', 'service': 'pdf-to-html'}), 200
 
-@app.route('/convert', methods=['POST'])
+@app.route('/convert', methods=['POST', 'GET'])
 def convert_pdf_to_html():
     """
     Convierte un PDF a HTML usando pdftohtml
     Acepta: multipart/form-data con un archivo PDF
     Retorna: JSON con el HTML generado o archivo HTML
     """
+    if request.method == 'GET':
+        action = request.args.get('action', '').strip().lower()
+        process_id = request.args.get('process_id', '').strip()
+        if action == 'download' and process_id:
+            return download_html(process_id)
+        if action == 'view' and process_id:
+            return view_html(process_id)
+        if action == 'asset' and process_id:
+            asset_path = request.args.get('asset_path', '').strip()
+            if not asset_path:
+                return jsonify({'error': 'asset_path es requerido para action=asset'}), 400
+            return serve_asset(process_id, asset_path)
+        return jsonify({
+            'error': "GET /convert requiere action=download|view|asset y process_id"
+        }), 400
+
     pdf_path = None
     temp_paths = []
     try:
@@ -589,8 +655,11 @@ def convert_pdf_to_html():
             }), 400
 
         # En cualquier estrategia, normalizar rutas relativas (CSS / fuentes / imágenes remanentes)
-        assets_base = f"{public_base_url}/convert/assets/{process_id}"
-        html_content = rewrite_html_relative_assets_to_base(html_content, assets_base)
+        html_content = rewrite_html_relative_assets_to_public_urls(
+            html_content=html_content,
+            public_base_url=public_base_url,
+            process_id=process_id
+        )
 
         # Guardar HTML con mejoras
         with open(html_path, 'w', encoding='utf-8') as f:
@@ -624,18 +693,19 @@ def convert_pdf_to_html():
                     additional_files.append(item)
 
             # URL base para montar HTML + assets (imágenes, CSS, etc.) desde este servicio
-            assets_base_url = f"{public_base_url}/convert/assets/{process_id}"
             response_payload = {
                 'success': True,
                 'html': html_content,
                 'filename': html_filename,
                 'process_id': process_id,
                 'additional_files': additional_files,
-                'assets_base_url': assets_base_url,
+                'assets_base_url': process_meta.get('assets_base_url'),
+                'asset_url_template': process_meta.get('asset_url_template'),
                 'image_strategy': image_strategy,
                 'embedded_images': embedded_images,
                 'processed_page': 1,
                 'public_html_url': process_meta.get('public_html_url'),
+                'public_download_url': process_meta.get('public_download_url'),
                 'expires_at': process_meta.get('expires_at'),
                 'message': 'PDF convertido exitosamente'
             }

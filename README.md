@@ -8,13 +8,13 @@ Microservicio Flask para convertir PDF a HTML usando `pdftohtml`, con extraccion
 - Estrategia por defecto basada en URL:
   - `extractor_urls` si envias `extractor_base_url` + `extractor_session_id`.
   - `assets_urls` en caso contrario.
-  - El HTML final queda con `<img src=\"https://...\">` o rutas absolutas URL.
+  - El HTML final queda con `<img src=\"https://.../convert?action=asset&...\">`.
 - Publicacion temporal por 1 hora (TTL) para HTML + assets.
 - Estrategias opcionales con `pdf-image-extractor` externo.
 - Endpoint `GET /health`.
 - Endpoint `GET /convert/download/<process_id>` para descargar HTML final.
-- Endpoint `GET /convert/view/<process_id>` para abrir HTML publico.
-- Endpoint `GET /convert/assets/<process_id>/<path:asset_path>` para servir assets locales.
+- Endpoint `GET /convert?action=view&process_id=...` para abrir HTML publico.
+- Endpoint `GET /convert?action=asset&process_id=...&asset_path=...` para servir assets.
 
 ## Run
 
@@ -46,7 +46,7 @@ Respuesta:
   - `pymupdf_embed`: usa PyMuPDF + Pillow y embebe imagenes.
   - `extractor_embed`: usa `pdf-image-extractor` y embebe imagenes descargadas.
   - `extractor_urls`: usa `pdf-image-extractor` y deja URLs remotas en `<img>`.
-  - `assets_urls`: mantiene assets locales servidos por `/convert/assets/...`.
+  - `assets_urls`: mantiene assets locales servidos por `/convert?action=asset&...`.
   - Si no envias `image_strategy`, se elige automaticamente `extractor_urls` o `assets_urls`.
 - `render_dpi` (optional): DPI para `pymupdf_embed` (default: `200`).
 - `extractor_base_url` (required para `extractor_embed` y `extractor_urls`).
@@ -65,8 +65,10 @@ Respuesta `format=json` (ejemplo):
   "filename": "documento.html",
   "process_id": "uuid-del-proceso",
   "additional_files": ["documento.css", "fonts/..."],
-  "assets_base_url": "https://docs.149-130-164-187.sslip.io/convert/assets/uuid-del-proceso",
-  "public_html_url": "https://docs.149-130-164-187.sslip.io/convert/view/uuid-del-proceso",
+  "assets_base_url": "https://docs.149-130-164-187.sslip.io/convert?action=asset&process_id=uuid-del-proceso",
+  "asset_url_template": "https://docs.149-130-164-187.sslip.io/convert?action=asset&process_id=uuid-del-proceso&asset_path={asset_path}",
+  "public_html_url": "https://docs.149-130-164-187.sslip.io/convert?action=view&process_id=uuid-del-proceso",
+  "public_download_url": "https://docs.149-130-164-187.sslip.io/convert?action=download&process_id=uuid-del-proceso",
   "expires_at": "2026-02-14T19:00:00Z",
   "image_strategy": "extractor_urls",
   "embedded_images": 0,
@@ -81,11 +83,11 @@ Cuando `image_strategy=pymupdf_embed`, se agrega `metadata` en la respuesta JSON
 
 Descarga el HTML generado.
 
-### GET /convert/view/<process_id>
+### GET /convert?action=view&process_id=<process_id>
 
 Muestra el HTML generado sin forzar descarga (URL publica).
 
-### GET /convert/assets/<process_id>/<path:asset_path>
+### GET /convert?action=asset&process_id=<process_id>&asset_path=<path>
 
 Sirve assets del proceso (imagenes, css, fuentes). Expira junto al proceso (TTL 1 hora).
 
