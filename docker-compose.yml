@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  pdf-to-html:
+    build: .
+    container_name: pdf-to-html-service
+    ports:
+      - "5050:5000"
+    volumes:
+      # Opcional: para persistir outputs si lo necesitas
+      - ./outputs:/tmp/outputs
+    environment:
+      - FLASK_ENV=production
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
