@@ -1,82 +1,34 @@
-# 📄 Microservicio PDF a HTML
+# PDF to HTML Service
 
-Microservicio que convierte archivos PDF a HTML usando **pdf2htmlEX**, manteniendo el formato visual idéntico al PDF original.
+Microservicio Flask para convertir PDF a HTML usando `pdftohtml`, con extraccion alternativa de imagenes via PyMuPDF + Pillow para incrustarlas como `data:` URI.
 
-## 🚀 Características
+## Features
 
-- ✅ API REST simple y fácil de usar
-- ✅ Conversión de alta fidelidad (mantiene el formato exacto del PDF)
-- ✅ Respuestas en JSON o descarga directa del archivo HTML
-- ✅ Dockerizado con Docker Compose
-- ✅ Health check endpoint
-- ✅ Manejo de errores robusto
+- Endpoint `POST /convert` para convertir PDF a HTML.
+- Estrategia por defecto basada en URL:
+  - `extractor_urls` si envias `extractor_base_url` + `extractor_session_id`.
+  - `assets_urls` en caso contrario.
+  - El HTML final queda con `<img src=\"https://...\">` o rutas absolutas URL.
+- Publicacion temporal por 1 hora (TTL) para HTML + assets.
+- Estrategias opcionales con `pdf-image-extractor` externo.
+- Endpoint `GET /health`.
+- Endpoint `GET /convert/download/<process_id>` para descargar HTML final.
+- Endpoint `GET /convert/view/<process_id>` para abrir HTML publico.
+- Endpoint `GET /convert/assets/<process_id>/<path:asset_path>` para servir assets locales.
 
-## 📋 Requisitos
-
-- Docker
-- Docker Compose
-
-## 🏃 Inicio Rápido
-
-### 1. Construir y ejecutar el servicio
+## Run
 
 ```bash
 docker-compose up -d --build
+curl http://localhost:5050/health
 ```
 
-### 2. Verificar que el servicio está corriendo
-
-```bash
-curl http://localhost:5000/health
-```
-
-Deberías ver:
-```json
-{
-  "status": "healthy",
-  "service": "pdf-to-html"
-}
-```
-
-### 3. Convertir un PDF
-
-**Opción A: Con curl (respuesta JSON)**
-```bash
-curl -X POST \
-  -F "file=@tu-archivo.pdf" \
-  -F "format=json" \
-  http://localhost:5000/convert
-```
-
-**Opción B: Con curl (descargar HTML directamente)**
-```bash
-curl -X POST \
-  -F "file=@tu-archivo.pdf" \
-  -F "format=file" \
-  http://localhost:5000/convert \
-  -o output.html
-```
-
-**Opción C: Con el script de prueba incluido**
-```bash
-# Dar permisos de ejecución
-chmod +x test_curl.sh
-
-# Ejecutar
-./test_curl.sh tu-archivo.pdf
-```
-
-**Opción D: Con Python**
-```bash
-python3 test_api.py tu-archivo.pdf
-```
-
-## 📡 API Endpoints
+## API
 
 ### GET /health
-Health check del servicio.
 
-**Respuesta:**
+Respuesta:
+
 ```json
 {
   "status": "healthy",
@@ -85,15 +37,27 @@ Health check del servicio.
 ```
 
 ### POST /convert
-Convierte un PDF a HTML.
 
-**Parámetros:**
-- `file` (required): Archivo PDF (multipart/form-data)
-- `format` (optional): `json` (default) o `file`
-- `extractor_base_url` (optional): URL base del servicio [pdf-image-extractor](../pdf-image-extractor) (ej. `http://pdf-image-extractor:5050`) para usar sus imágenes extraídas en el HTML
-- `extractor_session_id` (optional): Session ID devuelto por el extractor al extraer imágenes del mismo PDF (solo tiene efecto si se envía `extractor_base_url`)
+`multipart/form-data`:
 
-**Respuesta (format=json):**
+- `file` (required): archivo PDF.
+- `format` (optional): `json` (default) o `file`.
+- `image_strategy` (optional):
+  - `pymupdf_embed`: usa PyMuPDF + Pillow y embebe imagenes.
+  - `extractor_embed`: usa `pdf-image-extractor` y embebe imagenes descargadas.
+  - `extractor_urls`: usa `pdf-image-extractor` y deja URLs remotas en `<img>`.
+  - `assets_urls`: mantiene assets locales servidos por `/convert/assets/...`.
+  - Si no envias `image_strategy`, se elige automaticamente `extractor_urls` o `assets_urls`.
+- `render_dpi` (optional): DPI para `pymupdf_embed` (default: `200`).
+- `extractor_base_url` (required para `extractor_embed` y `extractor_urls`).
+- `extractor_session_id` (required para `extractor_embed` y `extractor_urls`).
+- `public_base_url` (optional): base publica para construir URLs absolutas, por ejemplo `https://tu-dominio.com`.
+- `PUBLIC_BASE_URL` (env optional): base publica por defecto si no envias `public_base_url`.
+- `PUBLIC_ASSET_TTL_SECONDS` (env optional): TTL de publicacion (default `3600`).
+- El servicio procesa siempre solo la pagina 1 del PDF para generar HTML e imagenes.
+
+Respuesta `format=json` (ejemplo):
+
 ```json
 {
   "success": true,
@@ -101,212 +65,51 @@ Convierte un PDF a HTML.
   "filename": "documento.html",
   "process_id": "uuid-del-proceso",
   "additional_files": ["documento.css", "fonts/..."],
-  "assets_base_url": "http://host/convert/assets/uuid-del-proceso",
+  "assets_base_url": "https://docs.149-130-164-187.sslip.io/convert/assets/uuid-del-proceso",
+  "public_html_url": "https://docs.149-130-164-187.sslip.io/convert/view/uuid-del-proceso",
+  "expires_at": "2026-02-14T19:00:00Z",
+  "image_strategy": "extractor_urls",
+  "embedded_images": 0,
+  "processed_page": 1,
   "message": "PDF convertido exitosamente"
 }
 ```
 
-El HTML generado usa **URLs absolutas** para imágenes y CSS (bien desde este servicio, bien desde el extractor si se indicó), de modo que al montar o abrir el HTML las imágenes cargan correctamente.
-
-**Respuesta (format=file):**
-Descarga directa del archivo HTML.
+Cuando `image_strategy=pymupdf_embed`, se agrega `metadata` en la respuesta JSON y se guarda `metadata.json` en el output del proceso.
 
 ### GET /convert/download/<process_id>
-Descarga el HTML generado usando el process_id retornado por `/convert`.
+
+Descarga el HTML generado.
+
+### GET /convert/view/<process_id>
+
+Muestra el HTML generado sin forzar descarga (URL publica).
 
 ### GET /convert/assets/<process_id>/<path:asset_path>
-Sirve un asset (imagen, CSS, fuentes) del proceso. Permite montar el HTML y que las rutas relativas del PDF convertido carguen las imágenes desde este servicio. Ejemplo: `GET /convert/assets/{process_id}/doc-png/page-1.png`.
 
-## 🧪 Pruebas
+Sirve assets del proceso (imagenes, css, fuentes). Expira junto al proceso (TTL 1 hora).
 
-### Método 1: Script Bash
-```bash
-chmod +x test_curl.sh
-./test_curl.sh sample.pdf
-```
+## Integracion con pdf-image-extractor
 
-### Método 2: Script Python
-```bash
-pip install requests
-python3 test_api.py sample.pdf
-```
+Flujo recomendado:
 
-### Método 3: Postman o Insomnia
-1. Crear una petición POST a `http://localhost:5000/convert`
-2. Tipo: multipart/form-data
-3. Agregar campo `file` con tu PDF
-4. Agregar campo `format` con valor `json` o `file`
-5. Enviar
+1. Enviar PDF al extractor (`POST /api/v1/extract`) y guardar `X-Session-ID`.
+2. Enviar el mismo PDF a este servicio con:
+   - `extractor_base_url`
+   - `extractor_session_id`
+   - `image_strategy=extractor_embed` (o `extractor_urls`).
 
-## 🐳 Comandos Docker
+## Local test
 
 ```bash
-# Iniciar el servicio
-docker-compose up -d
-
-# Ver logs
-docker-compose logs -f
-
-# Detener el servicio
-docker-compose down
-
-# Reconstruir después de cambios
-docker-compose up -d --build
-
-# Ver estado
-docker-compose ps
+python test_api.py sample.pdf
 ```
 
-## 🔗 Integración con pdf-image-extractor
+## Project files
 
-En la misma carpeta de microservicios existe el servicio [pdf-image-extractor](../pdf-image-extractor), que extrae imágenes de un PDF (PyMuPDF). Para que el HTML generado por este servicio use esas imágenes en lugar de las generadas por pdftohtml:
-
-1. Sube el PDF al **pdf-image-extractor** (`POST /api/v1/extract`) y anota el header `X-Session-ID`.
-2. Convierte el mismo PDF con este servicio pasando en el form:
-   - `extractor_base_url`: URL del extractor (ej. `http://localhost:5050` si corre en el mismo host).
-   - `extractor_session_id`: valor de `X-Session-ID`.
-
-El HTML resultante tendrá las etiquetas `<img>` apuntando a las URLs del extractor (`/api/v1/images/{session_id}/{filename}`), de modo que al montar el HTML se usan las imágenes extraídas por ese servicio.
-
-## 📁 Estructura del Proyecto
-
-```
-pdf-to-html-service/
-├── app.py                 # API Flask
-├── Dockerfile            # Imagen Docker con pdf2htmlEX
-├── docker-compose.yml    # Orquestación
-├── requirements.txt      # Dependencias Python
-├── test_api.py          # Script de prueba Python
-├── test_curl.sh         # Script de prueba Bash
-├── README.md            # Esta documentación
-└── outputs/             # Directorio para archivos generados (creado automáticamente)
-```
-
-## ⚙️ Configuración
-
-El servicio se ejecuta en el puerto **5000** por defecto. Para cambiarlo, edita `docker-compose.yml`:
-
-```yaml
-ports:
-  - "TU_PUERTO:5000"
-```
-
-## 🔧 Personalización
-
-### Ajustar parámetros de conversión
-
-Edita `app.py` en la sección del comando pdf2htmlEX:
-
-```python
-cmd = [
-    'pdf2htmlEX',
-    '--zoom', '1.3',           # Factor de zoom
-    '--dest-dir', output_dir,
-    pdf_path,
-    html_filename
-]
-```
-
-Parámetros útiles de pdf2htmlEX:
-- `--zoom`: Factor de escala (default: 1.3)
-- `--fit-width`: Ajustar al ancho de la página
-- `--embed-css`: Incrustar CSS en el HTML (default: 1)
-- `--embed-font`: Incrustar fuentes (default: 1)
-- `--embed-image`: Incrustar imágenes (default: 1)
-
-## 🔒 Producción
-
-Para producción, considera:
-
-1. **Agregar autenticación** (API keys, JWT, etc.)
-2. **Límites de tamaño de archivo**
-3. **Rate limiting**
-4. **HTTPS con reverse proxy** (nginx, traefik)
-5. **Monitoreo y logs**
-6. **Limpieza automática de archivos temporales**
-
-## 🐛 Troubleshooting
-
-### El servicio no inicia
-```bash
-# Ver logs
-docker-compose logs
-
-# Verificar que el puerto 5000 no esté en uso
-lsof -i :5000
-```
-
-### Error al convertir PDF
-- Verifica que el PDF no esté corrupto
-- Algunos PDFs con seguridad pueden fallar
-- Revisa los logs: `docker-compose logs`
-
-### Timeout en conversión
-Para PDFs grandes, aumenta el timeout en `docker-compose.yml`:
-```yaml
-environment:
-  - GUNICORN_TIMEOUT=300
-```
-
-## 📝 Ejemplo de Uso en Código
-
-### Python
-```python
-import requests
-
-url = "http://localhost:5000/convert"
-files = {"file": open("documento.pdf", "rb")}
-data = {"format": "json"}
-
-response = requests.post(url, files=files, data=data)
-result = response.json()
-
-# Guardar HTML
-with open("output.html", "w") as f:
-    f.write(result["html"])
-```
-
-### JavaScript/Node.js
-```javascript
-const FormData = require('form-data');
-const fs = require('fs');
-const axios = require('axios');
-
-const form = new FormData();
-form.append('file', fs.createReadStream('documento.pdf'));
-form.append('format', 'json');
-
-axios.post('http://localhost:5000/convert', form, {
-  headers: form.getHeaders()
-})
-.then(response => {
-  fs.writeFileSync('output.html', response.data.html);
-  console.log('Convertido!');
-})
-.catch(error => console.error(error));
-```
-
-### cURL
-```bash
-curl -X POST \
-  -F "file=@documento.pdf" \
-  -F "format=json" \
-  http://localhost:5000/convert | jq -r '.html' > output.html
-```
-
-## 📄 Licencia
-
-Este proyecto es de código abierto y está disponible bajo la licencia MIT.
-
-## 🤝 Contribuciones
-
-Las contribuciones son bienvenidas. Por favor:
-1. Haz fork del proyecto
-2. Crea una rama para tu feature
-3. Commit tus cambios
-4. Push a la rama
-5. Abre un Pull Request
-
-## 📞 Soporte
-
-Si encuentras algún problema o tienes sugerencias, por favor abre un issue en el repositorio.
+- `app.py`: API Flask.
+- `requirements.txt`: dependencias Python.
+- `Dockerfile`: imagen runtime.
+- `docker-compose.yml`: ejecucion local.
+- `test_api.py`: prueba Python.
+- `test_curl.sh`: prueba curl.

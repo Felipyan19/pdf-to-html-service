@@ -12,6 +12,8 @@ services:
     environment:
       - FLASK_ENV=production
       - PYTHONUNBUFFERED=1
+      - PUBLIC_BASE_URL=https://docs.149-130-164-187.sslip.io
+      - PUBLIC_ASSET_TTL_SECONDS=3600
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
