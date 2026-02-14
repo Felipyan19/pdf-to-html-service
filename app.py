@@ -12,7 +12,7 @@ import mimetypes
 import shutil
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse, unquote
 
 import fitz
 from PIL import Image
@@ -28,13 +28,20 @@ MAX_OCR_HEIGHT = 7600
 PUBLIC_ASSET_TTL_SECONDS = int(os.getenv('PUBLIC_ASSET_TTL_SECONDS', '3600'))
 DEFAULT_PUBLIC_BASE_URL = os.getenv('PUBLIC_BASE_URL', '').strip().rstrip('/')
 PROCESS_META_FILENAME = '_process_meta.json'
+MAX_REMOTE_PDF_SIZE_MB = int(os.getenv('MAX_REMOTE_PDF_SIZE_MB', '50'))
+MAX_REMOTE_PDF_SIZE_BYTES = MAX_REMOTE_PDF_SIZE_MB * 1024 * 1024
+REMOTE_PDF_TIMEOUT_SECONDS = int(os.getenv('REMOTE_PDF_TIMEOUT_SECONDS', '45'))
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 
-def resolve_public_base_url(req):
-    explicit_base = req.form.get('public_base_url', '').strip().rstrip('/')
+def resolve_public_base_url(req, payload=None):
+    explicit_base = ''
+    if isinstance(payload, dict):
+        explicit_base = str(payload.get('public_base_url', '')).strip().rstrip('/')
+    if not explicit_base:
+        explicit_base = req.form.get('public_base_url', '').strip().rstrip('/')
     if explicit_base:
         return explicit_base
     if DEFAULT_PUBLIC_BASE_URL:
@@ -60,6 +67,43 @@ def build_public_asset_url(public_base_url, process_id, asset_path):
         process_id=process_id,
         asset_path=asset_path
     )
+
+
+def infer_pdf_filename_from_url(pdf_url):
+    parsed = urlparse(pdf_url)
+    candidate = unquote(os.path.basename(parsed.path or '')).strip()
+    if not candidate:
+        return 'document.pdf'
+    if not candidate.lower().endswith('.pdf'):
+        return f"{candidate}.pdf"
+    return candidate
+
+
+def download_pdf_from_url(pdf_url, destination_path, timeout=REMOTE_PDF_TIMEOUT_SECONDS):
+    total_bytes = 0
+    with requests.get(pdf_url, stream=True, timeout=timeout, allow_redirects=True) as response:
+        response.raise_for_status()
+        content_type = (response.headers.get('Content-Type') or '').lower()
+        # Permite octet-stream porque muchos buckets sirven PDF con ese tipo.
+        if content_type and ('pdf' not in content_type and 'octet-stream' not in content_type):
+            raise ValueError(f"La URL no parece un PDF (Content-Type: {content_type})")
+        with open(destination_path, 'wb') as out:
+            for chunk in response.iter_content(chunk_size=8192):
+                if not chunk:
+                    continue
+                total_bytes += len(chunk)
+                if total_bytes > MAX_REMOTE_PDF_SIZE_BYTES:
+                    raise ValueError(
+                        f"El PDF remoto excede el máximo de {MAX_REMOTE_PDF_SIZE_MB} MB"
+                    )
+                out.write(chunk)
+
+    if total_bytes == 0:
+        raise ValueError('El PDF remoto está vacío')
+    with open(destination_path, 'rb') as check:
+        header = check.read(5)
+    if header != b'%PDF-':
+        raise ValueError('El archivo descargado no es un PDF válido')
 
 
 def utcnow():
@@ -455,7 +499,7 @@ def health():
 def convert_pdf_to_html():
     """
     Convierte un PDF a HTML usando pdftohtml
-    Acepta: multipart/form-data con un archivo PDF
+    Acepta: multipart/form-data con file o application/json con pdf_url
     Retorna: JSON con el HTML generado o archivo HTML
     """
     if request.method == 'GET':
@@ -479,43 +523,69 @@ def convert_pdf_to_html():
     try:
         cleanup_expired_outputs()
 
-        # Verificar que se envió un archivo
-        if 'file' not in request.files:
-            return jsonify({'error': 'No se envió ningún archivo'}), 400
-
-        file = request.files['file']
-
-        if file.filename == '':
-            return jsonify({'error': 'Nombre de archivo vacío'}), 400
-
-        if not allowed_file(file.filename):
-            return jsonify({'error': 'Solo se permiten archivos PDF'}), 400
-
         # Generar ID único para este proceso
         process_id = str(uuid.uuid4())
 
-        # Guardar archivo PDF
-        filename = secure_filename(file.filename)
-        pdf_path = os.path.join(UPLOAD_FOLDER, f"{process_id}_{filename}")
-        file.save(pdf_path)
-        temp_paths.append(pdf_path)
+        request_payload = request.get_json(silent=True) if request.is_json else {}
+        if not isinstance(request_payload, dict):
+            request_payload = {}
+
+        def read_input_value(key, default=''):
+            if key in request_payload and request_payload.get(key) is not None:
+                return str(request_payload.get(key)).strip()
+            form_value = request.form.get(key, None)
+            if form_value is not None:
+                return str(form_value).strip()
+            return default
+
+        # Entrada soportada:
+        # 1) multipart/form-data con field file
+        # 2) application/json con pdf_url
+        if 'file' in request.files:
+            file = request.files['file']
+            if file.filename == '':
+                return jsonify({'error': 'Nombre de archivo vacío'}), 400
+            if not allowed_file(file.filename):
+                return jsonify({'error': 'Solo se permiten archivos PDF'}), 400
+            filename = secure_filename(file.filename)
+            pdf_path = os.path.join(UPLOAD_FOLDER, f"{process_id}_{filename}")
+            file.save(pdf_path)
+            temp_paths.append(pdf_path)
+        else:
+            pdf_url = read_input_value('pdf_url', '')
+            if not pdf_url:
+                return jsonify({
+                    'error': "Debes enviar 'file' (multipart) o 'pdf_url' (JSON)"
+                }), 400
+            filename = read_input_value('filename', '') or infer_pdf_filename_from_url(pdf_url)
+            filename = secure_filename(filename) or 'document.pdf'
+            if not filename.lower().endswith('.pdf'):
+                filename = f"{filename}.pdf"
+            pdf_path = os.path.join(UPLOAD_FOLDER, f"{process_id}_{filename}")
+            try:
+                download_pdf_from_url(pdf_url, pdf_path)
+            except requests.RequestException as e:
+                return jsonify({'error': f'No se pudo descargar pdf_url: {e}'}), 400
+            except ValueError as e:
+                return jsonify({'error': str(e)}), 400
+            temp_paths.append(pdf_path)
 
         # Crear directorio de salida para este proceso
         output_dir = os.path.join(OUTPUT_FOLDER, process_id)
         os.makedirs(output_dir, exist_ok=True)
 
-        extractor_base_url = request.form.get('extractor_base_url', '').strip()
-        extractor_session_id = request.form.get('extractor_session_id', '').strip()
-        requested_strategy = request.form.get('image_strategy', '').strip().lower()
+        extractor_base_url = read_input_value('extractor_base_url', '')
+        extractor_session_id = read_input_value('extractor_session_id', '')
+        requested_strategy = read_input_value('image_strategy', '').lower()
         if requested_strategy:
             image_strategy = requested_strategy
         elif extractor_base_url and extractor_session_id:
             image_strategy = 'extractor_urls'
         else:
             image_strategy = 'assets_urls'
-        public_base_url = resolve_public_base_url(request)
+        public_base_url = resolve_public_base_url(request, request_payload)
         try:
-            render_dpi = int(request.form.get('render_dpi', str(DEFAULT_RENDER_DPI)))
+            render_dpi = int(read_input_value('render_dpi', str(DEFAULT_RENDER_DPI)))
             if render_dpi <= 0:
                 raise ValueError('render_dpi debe ser mayor a 0')
         except ValueError:
@@ -674,7 +744,7 @@ def convert_pdf_to_html():
         )
 
         # Obtener formato de respuesta deseado
-        return_format = request.form.get('format', 'json')
+        return_format = read_input_value('format', 'json').lower()
 
         if return_format == 'file':
             # Devolver el archivo HTML directamente

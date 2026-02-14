@@ -38,9 +38,16 @@ Respuesta:
 
 ### POST /convert
 
-`multipart/form-data`:
+Entradas soportadas:
 
-- `file` (required): archivo PDF.
+- `multipart/form-data` con `file`
+- `application/json` con `pdf_url`
+
+Campos:
+
+- `file` (optional): archivo PDF (multipart).
+- `pdf_url` (optional): URL pública del PDF (JSON).
+- Debes enviar uno: `file` o `pdf_url`.
 - `format` (optional): `json` (default) o `file`.
 - `image_strategy` (optional):
   - `pymupdf_embed`: usa PyMuPDF + Pillow y embebe imagenes.
@@ -54,7 +61,20 @@ Respuesta:
 - `public_base_url` (optional): base publica para construir URLs absolutas, por ejemplo `https://tu-dominio.com`.
 - `PUBLIC_BASE_URL` (env optional): base publica por defecto si no envias `public_base_url`.
 - `PUBLIC_ASSET_TTL_SECONDS` (env optional): TTL de publicacion (default `3600`).
+- `MAX_REMOTE_PDF_SIZE_MB` (env optional): tamaño maximo de `pdf_url` (default `50`).
+- `REMOTE_PDF_TIMEOUT_SECONDS` (env optional): timeout de descarga de `pdf_url` (default `45`).
 - El servicio procesa siempre solo la pagina 1 del PDF para generar HTML e imagenes.
+
+Ejemplo JSON:
+
+```json
+{
+  "pdf_url": "https://example.com/archivo.pdf",
+  "format": "json",
+  "image_strategy": "assets_urls",
+  "public_base_url": "https://docs.149-130-164-187.sslip.io"
+}
+```
 
 Respuesta `format=json` (ejemplo):
 
