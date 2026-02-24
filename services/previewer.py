@@ -37,7 +37,12 @@ def _make_asset_fetcher(public_base_url: str):
                 if os.path.isfile(file_path):
                     mime = mimetypes.guess_type(file_path)[0] or 'application/octet-stream'
                     with open(file_path, 'rb') as f:
-                        return {'content': f.read(), 'mime_type': mime}
+                        # WeasyPrint expects either "string" (bytes) or "file_obj".
+                        return {
+                            'string': f.read(),
+                            'mime_type': mime,
+                            'redirected_url': url,
+                        }
         # Fallback: descarga normal de weasyprint
         return weasyprint.default_url_fetcher(url)
 
