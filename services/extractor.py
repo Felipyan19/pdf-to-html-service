@@ -7,7 +7,10 @@ Por cada página extrae:
 """
 import os
 import fitz
+from PIL import Image
 from utils.storage import build_public_asset_url
+
+_RENDER_MAX_DIM = 4000  # límite seguro para Anthropic vision (máx 8000px)
 
 
 def extract_pdf_content(
@@ -78,8 +81,20 @@ def render_page_previews(
 
     for page_num, page in enumerate(doc):
         pix = page.get_pixmap(matrix=mat, alpha=False)
+        filepath = os.path.join(output_dir, f"render_p{page_num:02d}.png")
+
+        # Redimensionar si alguna dimensión supera el límite de la API de visión
+        if pix.width > _RENDER_MAX_DIM or pix.height > _RENDER_MAX_DIM:
+            scale = min(_RENDER_MAX_DIM / pix.width, _RENDER_MAX_DIM / pix.height)
+            new_w = max(1, int(pix.width * scale))
+            new_h = max(1, int(pix.height * scale))
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+            img.save(filepath)
+        else:
+            pix.save(filepath)
+
         filename = f"render_p{page_num:02d}.png"
-        pix.save(os.path.join(output_dir, filename))
         preview_urls.append(build_public_asset_url(public_base_url, process_id, filename))
 
     doc.close()
@@ -88,7 +103,8 @@ def render_page_previews(
 
 def _extract_page_texts(page: fitz.Page) -> list:
     """
-    Extrae todos los spans de texto de una página con sus bboxes.
+    Extrae texto de una página agrupando spans de la misma línea en una sola entrada.
+    Esto evita fragmentación palabra-a-palabra y reduce el tamaño del JSON.
     Coordenadas: origen top-left, Y crece hacia abajo (sistema nativo fitz).
 
     Returns lista de:
@@ -96,7 +112,8 @@ def _extract_page_texts(page: fitz.Page) -> list:
         "content": str,
         "bbox": {"x0": float, "y0": float, "x1": float, "y1": float},
         "font_size": float,
-        "font": str
+        "font": str,
+        "color_guess": str
     }
     """
     texts = []
@@ -106,30 +123,44 @@ def _extract_page_texts(page: fitz.Page) -> list:
         if block.get('type') != 0:  # 0 = text block
             continue
         for line in block.get('lines', []):
-            for span in line.get('spans', []):
-                content = span.get('text', '').strip()
-                if not content:
-                    continue
-                bbox = span.get('bbox', (0, 0, 0, 0))
-                # Color del span: fitz devuelve entero 0xRRGGBB
-                color_int = span.get('color', 0)
-                color_guess = '#{:02x}{:02x}{:02x}'.format(
-                    (color_int >> 16) & 0xFF,
-                    (color_int >> 8) & 0xFF,
-                    color_int & 0xFF
-                )
-                texts.append({
-                    'content': content,
-                    'bbox': {
-                        'x0': round(float(bbox[0]), 2),
-                        'y0': round(float(bbox[1]), 2),
-                        'x1': round(float(bbox[2]), 2),
-                        'y1': round(float(bbox[3]), 2)
-                    },
-                    'font_size': round(float(span.get('size', 0)), 2),
-                    'font': span.get('font', ''),
-                    'color_guess': color_guess,
-                })
+            spans = line.get('spans', [])
+            if not spans:
+                continue
+
+            # Concatenar todos los spans de la línea en un único texto
+            parts = [s.get('text', '') for s in spans]
+            content = ' '.join(p for p in parts if p.strip()).strip()
+            if not content:
+                continue
+
+            # Bbox que engloba todos los spans de la línea
+            all_bboxes = [s.get('bbox', (0, 0, 0, 0)) for s in spans]
+            x0 = min(b[0] for b in all_bboxes)
+            y0 = min(b[1] for b in all_bboxes)
+            x1 = max(b[2] for b in all_bboxes)
+            y1 = max(b[3] for b in all_bboxes)
+
+            # Usar atributos del primer span con contenido
+            primary = next((s for s in spans if s.get('text', '').strip()), spans[0])
+            color_int = primary.get('color', 0)
+            color_guess = '#{:02x}{:02x}{:02x}'.format(
+                (color_int >> 16) & 0xFF,
+                (color_int >> 8) & 0xFF,
+                color_int & 0xFF
+            )
+
+            texts.append({
+                'content': content,
+                'bbox': {
+                    'x0': round(float(x0), 2),
+                    'y0': round(float(y0), 2),
+                    'x1': round(float(x1), 2),
+                    'y1': round(float(y1), 2)
+                },
+                'font_size': round(float(primary.get('size', 0)), 2),
+                'font': primary.get('font', ''),
+                'color_guess': color_guess,
+            })
 
     return texts
 

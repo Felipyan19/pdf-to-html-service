@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "n8n-mcp": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "supergateway",
+        "--streamableHttp",
+        "https://n8n-dev.niawi.tech/mcp-server/http",
+        "--header",
+        "authorization:Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkNjEzZGYxZC1mZjVlLTRjMzEtOTVhNC01MzdhNjVlODBhZDAiLCJpc3MiOiJuOG4iLCJhdWQiOiJtY3Atc2VydmVyLWFwaSIsImp0aSI6ImE4ZjI1MWM4LWQyYTEtNDUxMC05NzMxLTZjY2NiZDI3MzUxYSIsImlhdCI6MTc3MTk0MDAxNH0.htpb6lSlidH6n4t-tbPD1pjOi-139ZK6_CaV28R7RCg"
+      ]
+    }
+  }
+}
