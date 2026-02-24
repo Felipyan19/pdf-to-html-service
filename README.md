@@ -1,137 +1,129 @@
-# PDF to HTML Service
+# PDF Newsletter to HTML Service
 
-Microservicio Flask para convertir PDF a HTML usando `pdftohtml`, con extraccion alternativa de imagenes via PyMuPDF + Pillow para incrustarlas como `data:` URI.
+Microservicio Flask minimal para el flujo n8n:
+`extract -> claude -> render -> preview -> diff`.
 
-## Features
+## Endpoints activos
 
-- Endpoint `POST /convert` para convertir PDF a HTML.
-- Estrategia por defecto basada en URL:
-  - `extractor_urls` si envias `extractor_base_url` + `extractor_session_id`.
-  - `assets_urls` en caso contrario.
-  - El HTML final queda con `<img src=\"https://.../convert?action=asset&...\">`.
-- Publicacion temporal por 1 hora (TTL) para HTML + assets.
-- Estrategias opcionales con `pdf-image-extractor` externo.
-- Endpoint `GET /health`.
-- Endpoint `GET /convert/download/<process_id>` para descargar HTML final.
-- Endpoint `GET /convert?action=view&process_id=...` para abrir HTML publico.
-- Endpoint `GET /convert?action=asset&process_id=...&asset_path=...` para servir assets.
+- `POST /extract`
+- `GET /assets`
+- `POST /render`
+- `POST /preview`
+- `POST /diff`
+
+## Contratos
+
+### POST /extract
+
+Entrada:
+
+- JSON: `{ "pdf_url": "https://..." }`
+- o multipart con `file`
+
+Salida:
+
+```json
+{
+  "doc_id": "uuid",
+  "page_count": 1,
+  "expires_at": "2026-02-24T12:00:00Z",
+  "pages": [
+    {
+      "page_index": 0,
+      "width_pt": 620,
+      "height_pt": 4791.4,
+      "render_png_url": "https://host/assets?process_id=...&asset_path=render_p00.png",
+      "texts": [
+        {
+          "id": "t_0",
+          "text": "hola",
+          "bbox": { "x0": 10, "y0": 20, "x1": 40, "y1": 30 }
+        }
+      ],
+      "images": [
+        {
+          "id": "i_0",
+          "url": "https://host/assets?process_id=...&asset_path=p00_img001_xref5.png",
+          "url_publica": "https://host/assets?process_id=...&asset_path=p00_img001_xref5.png",
+          "bbox": { "x0": 20, "y0": 50, "x1": 120, "y1": 150 },
+          "w_px": 400,
+          "h_px": 300
+        }
+      ]
+    }
+  ]
+}
+```
+
+### POST /render
+
+Entrada:
+
+```json
+{
+  "page_index": 0,
+  "render_ready_modules": []
+}
+```
+
+Salida:
+
+```json
+{
+  "html": "<!DOCTYPE html>...",
+  "page_index": 0
+}
+```
+
+### POST /preview
+
+Entrada:
+
+```json
+{
+  "html": "<!DOCTYPE html>..."
+}
+```
+
+Salida:
+
+```json
+{
+  "preview_png_url": "https://host/assets?process_id=...&asset_path=preview.png",
+  "expires_at": "2026-02-24T12:00:00Z"
+}
+```
+
+### POST /diff
+
+Entrada:
+
+```json
+{
+  "a_png": "https://...",
+  "b_png": "https://..."
+}
+```
+
+Salida:
+
+```json
+{
+  "score": 0.87,
+  "width": 1240,
+  "height": 1754,
+  "diffs": [
+    { "row": 2, "col": 5, "diff_pct": 0.34 }
+  ]
+}
+```
 
 ## Run
 
 ```bash
 docker-compose up -d --build
-curl http://localhost:5050/health
 ```
 
-## API
+Servidor:
 
-### GET /health
-
-Respuesta:
-
-```json
-{
-  "status": "healthy",
-  "service": "pdf-to-html"
-}
-```
-
-### POST /convert
-
-Entradas soportadas:
-
-- `multipart/form-data` con `file`
-- `application/json` con `pdf_url`
-
-Campos:
-
-- `file` (optional): archivo PDF (multipart).
-- `pdf_url` (optional): URL pública del PDF (JSON).
-- Debes enviar uno: `file` o `pdf_url`.
-- `format` (optional): `json` (default) o `file`.
-- `image_strategy` (optional):
-  - `pymupdf_embed`: usa PyMuPDF + Pillow y embebe imagenes.
-  - `extractor_embed`: usa `pdf-image-extractor` y embebe imagenes descargadas.
-  - `extractor_urls`: usa `pdf-image-extractor` y deja URLs remotas en `<img>`.
-  - `assets_urls`: mantiene assets locales servidos por `/convert?action=asset&...`.
-  - Si no envias `image_strategy`, se elige automaticamente `extractor_urls` o `assets_urls`.
-- `render_dpi` (optional): DPI para `pymupdf_embed` (default: `200`).
-- `extractor_base_url` (required para `extractor_embed` y `extractor_urls`).
-- `extractor_session_id` (required para `extractor_embed` y `extractor_urls`).
-- `public_base_url` (optional): base publica para construir URLs absolutas, por ejemplo `https://tu-dominio.com`.
-- `PUBLIC_BASE_URL` (env optional): base publica por defecto si no envias `public_base_url`.
-- `PUBLIC_ASSET_TTL_SECONDS` (env optional): TTL de publicacion (default `3600`).
-- `MAX_REMOTE_PDF_SIZE_MB` (env optional): tamaño maximo de `pdf_url` (default `50`).
-- `REMOTE_PDF_TIMEOUT_SECONDS` (env optional): timeout de descarga de `pdf_url` (default `45`).
-- El servicio procesa siempre solo la pagina 1 del PDF para generar HTML e imagenes.
-
-Ejemplo JSON:
-
-```json
-{
-  "pdf_url": "https://example.com/archivo.pdf",
-  "format": "json",
-  "image_strategy": "assets_urls",
-  "public_base_url": "https://docs.149-130-164-187.sslip.io"
-}
-```
-
-Respuesta `format=json` (ejemplo):
-
-```json
-{
-  "success": true,
-  "html": "<html>...</html>",
-  "filename": "documento.html",
-  "process_id": "uuid-del-proceso",
-  "additional_files": ["documento.css", "fonts/..."],
-  "assets_base_url": "https://docs.149-130-164-187.sslip.io/convert?action=asset&process_id=uuid-del-proceso",
-  "asset_url_template": "https://docs.149-130-164-187.sslip.io/convert?action=asset&process_id=uuid-del-proceso&asset_path={asset_path}",
-  "public_html_url": "https://docs.149-130-164-187.sslip.io/convert?action=view&process_id=uuid-del-proceso",
-  "public_download_url": "https://docs.149-130-164-187.sslip.io/convert?action=download&process_id=uuid-del-proceso",
-  "expires_at": "2026-02-14T19:00:00Z",
-  "image_strategy": "extractor_urls",
-  "embedded_images": 0,
-  "processed_page": 1,
-  "message": "PDF convertido exitosamente"
-}
-```
-
-Cuando `image_strategy=pymupdf_embed`, se agrega `metadata` en la respuesta JSON y se guarda `metadata.json` en el output del proceso.
-
-### GET /convert/download/<process_id>
-
-Descarga el HTML generado.
-
-### GET /convert?action=view&process_id=<process_id>
-
-Muestra el HTML generado sin forzar descarga (URL publica).
-
-### GET /convert?action=asset&process_id=<process_id>&asset_path=<path>
-
-Sirve assets del proceso (imagenes, css, fuentes). Expira junto al proceso (TTL 1 hora).
-
-## Integracion con pdf-image-extractor
-
-Flujo recomendado:
-
-1. Enviar PDF al extractor (`POST /api/v1/extract`) y guardar `X-Session-ID`.
-2. Enviar el mismo PDF a este servicio con:
-   - `extractor_base_url`
-   - `extractor_session_id`
-   - `image_strategy=extractor_embed` (o `extractor_urls`).
-
-## Local test
-
-```bash
-python test_api.py sample.pdf
-```
-
-## Project files
-
-- `app.py`: API Flask.
-- `requirements.txt`: dependencias Python.
-- `Dockerfile`: imagen runtime.
-- `docker-compose.yml`: ejecucion local.
-- `test_api.py`: prueba Python.
-- `test_curl.sh`: prueba curl.
+- `http://localhost:5050`

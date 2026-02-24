@@ -35,3 +35,14 @@ Thumbs.db
 
 # Docker
 *.log
+
+# n8n workflows (archivos de estudio, no parte del servicio)
+n8n-workflows/
+
+# Archivos temporales de test
+_test_state.json
+test_sample.pdf
+tt.json
+nul
+test_api.py
+test_curl.sh
