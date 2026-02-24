@@ -4,3 +4,5 @@ gunicorn==21.2.0
 requests==2.31.0
 PyMuPDF==1.24.14
 Pillow==10.4.0
+weasyprint==62.3
+pydyf==0.10.0

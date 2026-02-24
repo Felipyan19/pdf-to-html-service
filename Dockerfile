@@ -3,33 +3,40 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install poppler-utils (includes pdftohtml), Python and dependencies
+# Instalar Python, deps del sistema y libs de weasyprint (cairo, pango, gdk-pixbuf)
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     curl \
-    poppler-utils \
+    libcairo2 \
+    libpango-1.0-0 \
+    libpangocairo-1.0-0 \
+    libgdk-pixbuf-2.0-0 \
+    libffi-dev \
+    shared-mime-info \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
 
-# Copy requirements and install Python dependencies
+# Copiar requirements e instalar dependencias Python
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copiar código de la aplicación
 COPY app.py .
+COPY utils/ ./utils/
+COPY services/ ./services/
 
-# Create necessary directories
+# Crear directorios necesarios
 RUN mkdir -p /tmp/uploads /tmp/outputs
 
-# Expose port
+# Exponer puerto
 EXPOSE 5000
 
-# Environment variables
+# Variables de entorno
 ENV FLASK_APP=app.py
 ENV PYTHONUNBUFFERED=1
 
-# Run the application
+# Ejecutar la aplicación
 CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "120", "app:app"]

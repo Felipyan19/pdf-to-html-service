@@ -1,13 +1,12 @@
 version: '3.8'
 
 services:
-  pdf-to-html:
+  pdf-to-html-service:
     build: .
     container_name: pdf-to-html-service
     ports:
       - "5050:5000"
     volumes:
-      # Opcional: para persistir outputs si lo necesitas
       - ./outputs:/tmp/outputs
     environment:
       - FLASK_ENV=production
@@ -15,9 +14,3 @@ services:
       - PUBLIC_BASE_URL=https://docs.149-130-164-187.sslip.io
       - PUBLIC_ASSET_TTL_SECONDS=3600
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
